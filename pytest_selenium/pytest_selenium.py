@@ -130,12 +130,11 @@ def driver_factory(request, driver_class, driver_kwargs):
     Returns a factory function that returns a WebDriver instance when called,
     based on options and capabilities
     """
-    request.node._drivers = {}
+    request.node._drivers = []
 
-    def factory(name=None):
-        name = name or 'driver_{}'.format(len(request.node._drivers))
+    def factory():
         driver = driver_class(**driver_kwargs)
-        request.node._drivers[name] = driver
+        request.node._drivers.append(driver)
 
         event_listener = request.config.getoption('event_listener')
         if event_listener is not None:
@@ -150,7 +149,7 @@ def driver_factory(request, driver_class, driver_kwargs):
 
     yield factory
 
-    for driver in request.node._drivers.values():
+    for driver in request.node._drivers:
         driver.quit()
 
 
@@ -201,17 +200,19 @@ def pytest_runtest_makereport(item, call):
     failure = (report.skipped and xfail) or (report.failed and not xfail)
     when = item.config.getini('selenium_capture_debug').lower()
     capture_debug = when == 'always' or (when == 'failure' and failure)
-    for driver_name, driver in drivers.items():
+    for driver_number, driver in enumerate(drivers):
+        if len(drivers) == 1:
+            driver_number = None
         if capture_debug:
             exclude = item.config.getini('selenium_exclude_debug').lower()
             if 'url' not in exclude:
-                _gather_url(item, report, driver, summary, extra)
+                _gather_url(item, report, driver, summary, extra, driver_number)
             if 'screenshot' not in exclude:
-                _gather_screenshot(item, report, driver, summary, extra)
+                _gather_screenshot(item, report, driver, summary, extra, driver_number)
             if 'html' not in exclude:
-                _gather_html(item, report, driver, summary, extra)
+                _gather_html(item, report, driver, summary, extra, driver_number)
             if 'logs' not in exclude:
-                _gather_logs(item, report, driver, summary, extra)
+                _gather_logs(item, report, driver, summary, extra, driver_number)
             item.config.hook.pytest_selenium_capture_debug(
                 item=item, report=report, extra=extra)
         item.config.hook.pytest_selenium_runtest_makereport(
@@ -221,7 +222,7 @@ def pytest_runtest_makereport(item, call):
     report.extra = extra
 
 
-def _gather_url(item, report, driver, summary, extra):
+def _gather_url(item, report, driver, summary, extra, driver_number):
     try:
         url = driver.current_url
     except Exception as e:
@@ -230,11 +231,11 @@ def _gather_url(item, report, driver, summary, extra):
     pytest_html = item.config.pluginmanager.getplugin('html')
     if pytest_html is not None:
         # add url to the html report
-        extra.append(pytest_html.extras.url(url))
+        extra.append(pytest_html.extras.url(url, append_number('URL', driver_number)))
     summary.append('URL: {0}'.format(url))
 
 
-def _gather_screenshot(item, report, driver, summary, extra):
+def _gather_screenshot(item, report, driver, summary, extra, driver_number):
     try:
         screenshot = driver.get_screenshot_as_base64()
     except Exception as e:
@@ -243,10 +244,10 @@ def _gather_screenshot(item, report, driver, summary, extra):
     pytest_html = item.config.pluginmanager.getplugin('html')
     if pytest_html is not None:
         # add screenshot to the html report
-        extra.append(pytest_html.extras.image(screenshot, 'Screenshot'))
+        extra.append(pytest_html.extras.image(screenshot, append_number('SCREENSHOT', driver_number)))
 
 
-def _gather_html(item, report, driver, summary, extra):
+def _gather_html(item, report, driver, summary, extra, driver_number):
     try:
         html = driver.page_source
     except Exception as e:
@@ -255,15 +256,15 @@ def _gather_html(item, report, driver, summary, extra):
     pytest_html = item.config.pluginmanager.getplugin('html')
     if pytest_html is not None:
         # add page source to the html report
-        extra.append(pytest_html.extras.text(html, 'HTML'))
+        extra.append(pytest_html.extras.text(html, append_number('HTML', driver_number)))
 
 
-def _gather_logs(item, report, driver, summary, extra):
+def _gather_logs(item, report, driver, summary, extra, driver_number):
     pytest_html = item.config.pluginmanager.getplugin('html')
     if item.config._driver_log and os.path.exists(item.config._driver_log):
         if pytest_html is not None:
             with io.open(item.config._driver_log, 'r', encoding='utf8') as f:
-                extra.append(pytest_html.extras.text(f.read(), 'Driver Log'))
+                extra.append(pytest_html.extras.text(f.read(), append_number('Driver Log', driver_number)))
         summary.append('Driver log: {0}'.format(item.config._driver_log))
     try:
         types = driver.log_types
@@ -279,8 +280,14 @@ def _gather_logs(item, report, driver, summary, extra):
                 name, e))
             return
         if pytest_html is not None:
-            extra.append(pytest_html.extras.text(
+            extra.append(pytest_html.extras.text(  # todo understand what happens here
                 format_log(log), '%s Log' % name.title()))
+
+
+def append_number(original, number):
+    if number is None:
+        return original
+    return '{}_{}'.format(original, number)
 
 
 def format_log(log):
