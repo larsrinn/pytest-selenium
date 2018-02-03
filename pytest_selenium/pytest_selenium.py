@@ -124,23 +124,41 @@ def driver_path(request):
     return request.config.getoption('driver_path')
 
 
+@pytest.fixture
+def driver_factory(request, driver_class, driver_kwargs):
+    """
+    Returns a factory function that returns a WebDriver instance when called,
+    based on options and capabilities
+    """
+    request.node._drivers = {}
+
+    def factory(name=None):
+        name = name or 'driver_{}'.format(len(request.node._drivers))
+        driver = driver_class(**driver_kwargs)
+        request.node._drivers[name] = driver
+
+        event_listener = request.config.getoption('event_listener')
+        if event_listener is not None:
+            # Import the specified event listener and wrap the driver instance
+            mod_name, class_name = event_listener.rsplit('.', 1)
+            mod = __import__(mod_name, fromlist=[class_name])
+            event_listener = getattr(mod, class_name)
+            if not isinstance(driver, EventFiringWebDriver):
+                driver = EventFiringWebDriver(driver, event_listener())
+
+        return driver
+
+    yield factory
+
+    for driver in request.node._drivers.values():
+        driver.quit()
+
+
 @pytest.yield_fixture
-def driver(request, driver_class, driver_kwargs):
+def driver(driver_factory):
     """Returns a WebDriver instance based on options and capabilities"""
-    driver = driver_class(**driver_kwargs)
-
-    event_listener = request.config.getoption('event_listener')
-    if event_listener is not None:
-        # Import the specified event listener and wrap the driver instance
-        mod_name, class_name = event_listener.rsplit('.', 1)
-        mod = __import__(mod_name, fromlist=[class_name])
-        event_listener = getattr(mod, class_name)
-        if not isinstance(driver, EventFiringWebDriver):
-            driver = EventFiringWebDriver(driver, event_listener())
-
-    request.node._driver = driver
-    yield driver
-    driver.quit()
+    driver = driver_factory()
+    return driver
 
 
 @pytest.yield_fixture
@@ -178,12 +196,12 @@ def pytest_runtest_makereport(item, call):
     report = outcome.get_result()
     summary = []
     extra = getattr(report, 'extra', [])
-    driver = getattr(item, '_driver', None)
+    drivers = getattr(item, '_drivers', {})
     xfail = hasattr(report, 'wasxfail')
     failure = (report.skipped and xfail) or (report.failed and not xfail)
     when = item.config.getini('selenium_capture_debug').lower()
     capture_debug = when == 'always' or (when == 'failure' and failure)
-    if driver is not None:
+    for driver_name, driver in drivers.items():
         if capture_debug:
             exclude = item.config.getini('selenium_exclude_debug').lower()
             if 'url' not in exclude:
